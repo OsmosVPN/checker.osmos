@@ -79,8 +79,8 @@ async function checkWS(id, host, port) {
   if (wsR.success)
     return { id, online: true, latency: wsR.ms, isApproximate: false };
 
-  // Сервер ответил быстро (не таймаут), но WS не поддерживается — DNS подтверждает что он живой
-  if (!wsR.success && wsR.ms < 1000 && dnsOk)
+  // Сервер ответил (не таймаут), но WS не поддерживается — DNS подтверждает что он живой
+  if (!wsR.success && wsR.ms < 2500 && dnsOk)
     return { id, online: true, latency: wsR.ms, isApproximate: true };
 
   return { id, online: false, latency: null, isApproximate: false };
