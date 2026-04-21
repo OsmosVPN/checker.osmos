@@ -14,14 +14,16 @@ export const DEFAULT_SUB_URL = ALL_SUBS[0];
 
 const PROXIES = [
   (u) => `https://corsproxy.io/?${encodeURIComponent(u)}`,
+  (u) => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
   (u) => `https://thingproxy.freeboard.io/fetch/${u}`,
   (u) => `https://cors.bridged.cc/${u}`,
   (u) => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(u)}`,
+  (u) =>
+    `https://api.cors-anywhere.com/` +
+    u.split("://")[1].split("/")[0] +
+    "/" +
+    u.split("/").slice(3).join("/"),
 ];
-
-function normalizeCheckMethod(method) {
-  return method === "tcp" ? "tcp" : "ws";
-}
 
 // Проверяет, является ли строка IPv4-адресом
 function isIPv4(host) {
@@ -87,7 +89,6 @@ function parseConfig(line) {
         raw: line,
         status: "pending",
         latency: null,
-        isApproximate: false,
       };
     }
     if (line.startsWith("trojan://")) {
@@ -104,7 +105,6 @@ function parseConfig(line) {
         raw: line,
         status: "pending",
         latency: null,
-        isApproximate: true,
       };
     }
     if (line.startsWith("ss://")) {
@@ -128,7 +128,6 @@ function parseConfig(line) {
           raw: line,
           status: "pending",
           latency: null,
-          isApproximate: true,
         };
       }
       return null;
@@ -148,7 +147,6 @@ function parseConfig(line) {
         raw: line,
         status: "pending",
         latency: null,
-        isApproximate: false,
       };
     }
     if (line.startsWith("hysteria2://") || line.startsWith("hy2://")) {
@@ -165,7 +163,6 @@ function parseConfig(line) {
         raw: line,
         status: "pending",
         latency: null,
-        isApproximate: true,
       };
     }
   } catch {
@@ -264,7 +261,6 @@ export function useConfigs() {
   const workerRef = useRef(null);
   const currentConfigsRef = useRef([]);
   const runIdRef = useRef(0);
-  const checkMethodRef = useRef("ws");
 
   const replaceConfigs = useCallback((nextConfigs) => {
     currentConfigsRef.current = nextConfigs;
@@ -287,10 +283,7 @@ export function useConfigs() {
   }, []);
 
   const runChecks = useCallback(
-    (configsToCheck, method, runId) => {
-      const normalizedMethod = normalizeCheckMethod(method);
-      checkMethodRef.current = normalizedMethod;
-
+    (configsToCheck, runId) => {
       if (configsToCheck.length === 0) {
         setLoading(false);
         setChecking(false);
@@ -304,8 +297,31 @@ export function useConfigs() {
       const worker = new CheckerWorker();
       workerRef.current = worker;
 
+      worker.onerror = (err) => {
+        console.error("[useConfigs] Worker error:", err);
+        if (runId !== runIdRef.current) return;
+
+        worker.terminate();
+        if (workerRef.current === worker) workerRef.current = null;
+        setChecking(false);
+      };
+
       worker.onmessage = (e) => {
+        console.log(
+          "[useConfigs] onmessage:",
+          e.data?.type,
+          "runId:",
+          runId,
+          "current:",
+          runIdRef.current,
+        );
         if (runId !== runIdRef.current) {
+          console.warn(
+            "[useConfigs] runId mismatch, ignoring",
+            runId,
+            "!=",
+            runIdRef.current,
+          );
           worker.terminate();
           if (workerRef.current === worker) workerRef.current = null;
           return;
@@ -328,7 +344,6 @@ export function useConfigs() {
                   ...config,
                   status: result.online ? "online" : "offline",
                   latency: result.latency,
-                  isApproximate: result.isApproximate,
                 };
               }),
             ),
@@ -344,42 +359,25 @@ export function useConfigs() {
         }
       };
 
-      worker.onerror = () => {
-        if (runId !== runIdRef.current) return;
-
-        worker.terminate();
-        if (workerRef.current === worker) workerRef.current = null;
-        setChecking(false);
-      };
-
       worker.postMessage({
         type: "CHECK",
-        configs: configsToCheck.map(({ id, host, port, protocol }) => ({
+        configs: configsToCheck.map(({ id, host, port }) => ({
           id,
           host,
           port,
-          protocol,
         })),
         batchSize: 16,
-        method: normalizedMethod,
       });
     },
     [updateConfigs],
   );
 
   const loadAndCheck = useCallback(
-    async ({
-      subUrls = [DEFAULT_SUB_URL],
-      manualRaw = "",
-      checkMethod = "ws",
-    } = {}) => {
-      const normalizedMethod = normalizeCheckMethod(checkMethod);
-
+    async ({ subUrls = [DEFAULT_SUB_URL], manualRaw = "" } = {}) => {
       runIdRef.current += 1;
       const runId = runIdRef.current;
 
       terminateWorker();
-      checkMethodRef.current = normalizedMethod;
 
       setLoading(true);
       setChecking(false);
@@ -446,7 +444,7 @@ export function useConfigs() {
       );
 
       replaceConfigs(nextConfigs);
-      runChecks(nextConfigs, normalizedMethod, runId);
+      runChecks(nextConfigs, runId);
     },
     [replaceConfigs, runChecks, terminateWorker],
   );
@@ -488,7 +486,7 @@ export function useConfigs() {
 
     replaceConfigs(nextConfigs);
     setPaused(false);
-    runChecks(pausedConfigs, checkMethodRef.current, runId);
+    runChecks(pausedConfigs, runId);
   }, [replaceConfigs, runChecks]);
 
   const stats = {

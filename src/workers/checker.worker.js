@@ -1,38 +1,4 @@
-// Web Worker: проверяет серверы разными методами
-
-// ── TCP probe: fetch no-cors (Image недоступен в воркере)
-function tcpProbe(host, port, timeoutMs) {
-  return new Promise((resolve) => {
-    const t0 = performance.now();
-    const controller = new AbortController();
-    const timer = setTimeout(() => {
-      controller.abort();
-      resolve(null);
-    }, timeoutMs);
-
-    fetch(`https://${host}:${port}/`, {
-      method: "HEAD",
-      mode: "no-cors",
-      cache: "no-store",
-      signal: controller.signal,
-    })
-      .then(() => {
-        clearTimeout(timer);
-        const latency = Math.max(10, Math.round(performance.now() - t0));
-        resolve(latency);
-      })
-      .catch((e) => {
-        clearTimeout(timer);
-        const elapsed = performance.now() - t0;
-        if (e.name !== "AbortError") {
-          const latency = Math.max(10, Math.round(elapsed));
-          resolve(latency);
-        } else {
-          resolve(null);
-        }
-      });
-  });
-}
+// Web Worker: проверяет серверы через DNS+WS
 
 // ── Cloudflare DNS-over-HTTPS
 async function checkDNS(domain) {
@@ -66,7 +32,7 @@ async function checkDNS(domain) {
 function checkWSHandshake(host, port) {
   return new Promise((resolve) => {
     const t0 = performance.now();
-    const proto = port === 443 || port === 8443 ? "wss" : "ws";
+    // Всегда используем wss:// — на HTTPS странице ws:// блокируется браузером
     let settled = false;
     const done = (r) => {
       if (!settled) {
@@ -82,7 +48,7 @@ function checkWSHandshake(host, port) {
       }
       done({ success: false });
     }, 3000);
-    const ws = new WebSocket(`${proto}://${host}:${port}`);
+    const ws = new WebSocket(`wss://${host}:${port}`);
     ws.onopen = () => {
       clearTimeout(timer);
       ws.close();
@@ -101,19 +67,7 @@ function checkWSHandshake(host, port) {
   });
 }
 
-// ── TCP: одна проба
-// Используется для SS/Trojan/HY2 - даёт ПРИБЛИЗИТЕЛЬНЫЕ результаты
-// (HY2 использует QUIC/HTTP3, SS и Trojan требуют протокол-специфичной обработки)
-async function checkTCP(id, host, port) {
-  const ms = await tcpProbe(host, port, 4000);
-  if (ms !== null)
-    return { id, online: true, latency: ms, isApproximate: true };
-  return { id, online: false, latency: null, isApproximate: true };
-}
-
 // ── DNS+WS: WebSocket + Cloudflare DNS параллельно
-// Используется для VLESS/VMess - ТОЧНЫЕ результаты
-// (HY2 использует QUIC/HTTP3, браузер не может проверить - нужен backend)
 async function checkWS(id, host, port) {
   const t0 = performance.now();
   const [wsR, dnsR] = await Promise.all([
@@ -131,23 +85,22 @@ async function checkWS(id, host, port) {
   return { id, online: false, latency: null, isApproximate: false };
 }
 
-const CHECK_FN = { ws: checkWS, tcp: checkTCP };
-
 self.onmessage = async (e) => {
-  const { type, configs, batchSize = 14, method = "ws" } = e.data;
+  const { type, configs, batchSize = 14 } = e.data;
   if (type !== "CHECK") return;
+
+  console.log(`[Worker] Starting check: ${configs.length} configs`);
 
   for (let i = 0; i < configs.length; i += batchSize) {
     const batch = configs.slice(i, i + batchSize);
     const results = await Promise.all(
-      batch.map((c) => {
-        // HY2, SS, Trojan всегда проверяются TCP методом (приблизительно)
-        const isApproxProtocol = ["HY2", "SS", "Trojan"].includes(c.protocol);
-        const check = isApproxProtocol
-          ? checkTCP
-          : (CHECK_FN[method] ?? checkWS);
-        return check(c.id, c.host, c.port);
-      }),
+      batch.map((c) => checkWS(c.id, c.host, c.port)),
+    );
+    console.log(
+      `[Worker] Batch ${i / batchSize + 1} done:`,
+      results.filter((r) => r.online).length,
+      "online /",
+      results.length,
     );
     self.postMessage({ type: "BATCH_RESULT", results });
   }

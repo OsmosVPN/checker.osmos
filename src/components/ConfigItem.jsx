@@ -131,7 +131,6 @@ export default memo(function ConfigItem({ config }) {
             flexShrink: 0,
           }}
         >
-          {config.isApproximate && "~"}
           {config.latency}ms
         </span>
       ) : null}

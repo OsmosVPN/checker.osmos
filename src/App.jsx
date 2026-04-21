@@ -10,7 +10,6 @@ import { ALL_SUBS, useConfigs } from "./hooks/useConfigs";
 const DEFAULT_SETTINGS = {
   subUrls: ALL_SUBS,
   manualConfigs: "",
-  checkMethod: "ws",
 };
 
 export default function App() {
@@ -42,7 +41,6 @@ export default function App() {
     loadAndCheck({
       subUrls: settings.subUrls,
       manualRaw: settings.manualConfigs,
-      checkMethod: settings.checkMethod,
     });
   };
 
