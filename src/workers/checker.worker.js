@@ -1,4 +1,4 @@
-// Web Worker: проверяет серверы через DNS+WS
+// Web Worker: проверяет серверы через WS + DNS
 
 // ── Cloudflare DNS-over-HTTPS
 async function checkDNS(domain) {
@@ -12,19 +12,17 @@ async function checkDNS(domain) {
         mode: "cors",
       },
     );
-    if (!r.ok) return { success: false };
+    if (!r.ok) return false;
     const data = await r.json();
-    if (data.Answer?.length > 0) {
-      const hasIP = data.Answer.some(
+    return (
+      data.Answer?.some(
         (a) =>
           a.data &&
           (a.data.match(/^\d+\.\d+\.\d+\.\d+$/) || a.data.includes(":")),
-      );
-      return { success: hasIP };
-    }
-    return { success: false };
+      ) ?? false
+    );
   } catch {
-    return { success: false };
+    return false;
   }
 }
 
@@ -46,7 +44,7 @@ function checkWSHandshake(host, port) {
       } catch {
         /**/
       }
-      done({ success: false });
+      done({ success: false, ms: 3000 });
     }, 3000);
     const ws = new WebSocket(`wss://${host}:${port}`);
     ws.onopen = () => {
@@ -58,7 +56,8 @@ function checkWSHandshake(host, port) {
     ws.onerror = () => {
       clearTimeout(timer);
       const ms = Math.max(10, Math.round(performance.now() - t0));
-      done({ success: ms < 2500, ms });
+      // success: false, но сохраняем ms чтобы оценить скорость ответа
+      done({ success: false, ms });
     };
     ws.onclose = () => {
       const ms = Math.max(10, Math.round(performance.now() - t0));
@@ -67,21 +66,23 @@ function checkWSHandshake(host, port) {
   });
 }
 
-// ── DNS+WS: WebSocket + Cloudflare DNS параллельно
+// ── WS + DNS как дополнительное подтверждение
+// Сервер онлайн если:
+//   1. WS handshake прошёл успешно, ИЛИ
+//   2. WS вернул ошибку быстро (< 1000 мс, сервер ответил) И DNS резолвится
 async function checkWS(id, host, port) {
-  const t0 = performance.now();
-  const [wsR, dnsR] = await Promise.all([
+  const [wsR, dnsOk] = await Promise.all([
     checkWSHandshake(host, port),
     checkDNS(host),
   ]);
-  if (wsR.success && wsR.ms)
+
+  if (wsR.success)
     return { id, online: true, latency: wsR.ms, isApproximate: false };
-  if (dnsR.success && wsR.ms && wsR.ms < 2500)
-    return { id, online: true, latency: wsR.ms, isApproximate: false };
-  if (dnsR.success) {
-    const ms = Math.max(10, Math.round(performance.now() - t0));
-    return { id, online: true, latency: ms, isApproximate: false };
-  }
+
+  // Сервер ответил быстро (не таймаут), но WS не поддерживается — DNS подтверждает что он живой
+  if (!wsR.success && wsR.ms < 1000 && dnsOk)
+    return { id, online: true, latency: wsR.ms, isApproximate: true };
+
   return { id, online: false, latency: null, isApproximate: false };
 }
 
