@@ -31,7 +31,8 @@ async function checkDNS(domain) {
 function checkWSHandshake(host, port) {
   return new Promise((resolve) => {
     const t0 = performance.now();
-    const proto = port === 443 || port === 8443 ? "wss" : "ws";
+    const pageIsHttps = self.location?.protocol === "https:";
+    const proto = pageIsHttps || port === 443 || port === 8443 ? "wss" : "ws";
     let settled = false;
     const done = (r) => {
       if (!settled) {
